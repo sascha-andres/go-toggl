@@ -1,9 +1,7 @@
 /*
-
 Package toggl provides an API for interacting with the Toggl time tracking service.
 
 See https://github.com/toggl/toggl_api_docs for more information on Toggl's REST API.
-
 */
 package toggl
 
@@ -22,7 +20,7 @@ import (
 
 // Toggl service constants
 const (
-	TogglAPI       = "https://api.track.toggl.com/api/v8"
+	TogglAPI       = "https://api.track.toggl.com/api/v9"
 	ReportsAPI     = "https://api.track.toggl.com/reports/api/v2"
 	DefaultAppName = "go-toggl"
 )
@@ -255,20 +253,20 @@ func (session *Session) GetDetailedReport(workspace int, since, until string, pa
 }
 
 // StartTimeEntry creates a new time entry.
-func (session *Session) StartTimeEntry(description string) (TimeEntry, error) {
+func (session *Session) StartTimeEntry(description string, workspace int) (TimeEntry, error) {
 	data := map[string]interface{}{
 		"time_entry": map[string]string{
 			"description":  description,
 			"created_with": AppName,
 		},
 	}
-	respData, err := session.post(TogglAPI, "/time_entries/start", data)
+	respData, err := session.post(TogglAPI, fmt.Sprintf("/workspaces/%d/time_entries", workspace), data)
 	return timeEntryRequest(respData, err)
 }
 
 // GetCurrentTimeEntry returns the current time entry, that's running
 func (session *Session) GetCurrentTimeEntry() (TimeEntry, error) {
-	data, err := session.get(TogglAPI, "/time_entries/current", nil)
+	data, err := session.get(TogglAPI, "/me/time_entries/current", nil)
 	if err != nil {
 		return TimeEntry{}, err
 	}
@@ -281,7 +279,7 @@ func (session *Session) GetTimeEntries(startDate, endDate time.Time) ([]TimeEntr
 	params := make(map[string]string)
 	params["start_date"] = startDate.Format(time.RFC3339)
 	params["end_date"] = endDate.Format(time.RFC3339)
-	data, err := session.get(TogglAPI, "/time_entries", params)
+	data, err := session.get(TogglAPI, "/me/time_entries", params)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +293,7 @@ func (session *Session) GetTimeEntries(startDate, endDate time.Time) ([]TimeEntr
 
 // StartTimeEntryForProject creates a new time entry for a specific project. Note that the 'billable' option is only
 // meaningful for Toggl Pro accounts; it will be ignored for free accounts.
-func (session *Session) StartTimeEntryForProject(description string, projectID int, billable bool) (TimeEntry, error) {
+func (session *Session) StartTimeEntryForProject(description string, wid, projectID int, billable bool) (TimeEntry, error) {
 	data := map[string]interface{}{
 		"time_entry": map[string]interface{}{
 			"description":  description,
@@ -304,7 +302,7 @@ func (session *Session) StartTimeEntryForProject(description string, projectID i
 			"created_with": AppName,
 		},
 	}
-	respData, err := session.post(TogglAPI, "/time_entries/start", data)
+	respData, err := session.post(TogglAPI, fmt.Sprintf("/workspaces/%d/time_entries", wid), data)
 	return timeEntryRequest(respData, err)
 }
 
@@ -314,7 +312,7 @@ func (session *Session) UpdateTimeEntry(timer TimeEntry) (TimeEntry, error) {
 	data := map[string]interface{}{
 		"time_entry": timer,
 	}
-	path := fmt.Sprintf("/time_entries/%v", timer.ID)
+	path := fmt.Sprintf("/workspaces/%v/time_entries/%v", timer.Wid, timer.ID)
 	respData, err := session.post(TogglAPI, path, data)
 	return timeEntryRequest(respData, err)
 }
@@ -338,7 +336,7 @@ func (session *Session) ContinueTimeEntry(timer TimeEntry, duronly bool) (TimeEn
 		data := map[string]interface{}{
 			"time_entry": entry,
 		}
-		path := fmt.Sprintf("/time_entries/%d", timer.ID)
+		path := fmt.Sprintf("/workspaces/%d/time_entries/%d", timer.Wid, timer.ID)
 		respData, err = session.put(TogglAPI, path, data)
 	} else {
 		// If we're not doing a duration-only continuation, or a duration timer
@@ -354,7 +352,7 @@ func (session *Session) ContinueTimeEntry(timer TimeEntry, duronly bool) (TimeEn
 				"duronly":      duronly,
 			},
 		}
-		respData, err = session.post(TogglAPI, "/time_entries/start", data)
+		respData, err = session.post(TogglAPI, fmt.Sprintf("/workspaces/%d/time_entries", timer.Wid), data)
 	}
 	return timeEntryRequest(respData, err)
 }
@@ -377,7 +375,7 @@ func (session *Session) UnstopTimeEntry(timer TimeEntry) (newEntry TimeEntry, er
 		},
 	}
 
-	if respData, err = session.post(TogglAPI, "/time_entries/start", data); err != nil {
+	if respData, err = session.post(TogglAPI, fmt.Sprintf("/workspaces/%d/time_entries", timer.Wid), data); err != nil {
 		err = fmt.Errorf("New entry not started: %v", err)
 		return
 	}
@@ -404,14 +402,14 @@ func (session *Session) UnstopTimeEntry(timer TimeEntry) (newEntry TimeEntry, er
 // StopTimeEntry stops a running time entry.
 func (session *Session) StopTimeEntry(timer TimeEntry) (TimeEntry, error) {
 	dlog.Printf("Stopping timer %v", timer)
-	path := fmt.Sprintf("/time_entries/%v/stop", timer.ID)
+	path := fmt.Sprintf("/workspaces/%d/time_entries/%d/stop", timer.Wid, timer.ID)
 	respData, err := session.put(TogglAPI, path, nil)
 	return timeEntryRequest(respData, err)
 }
 
 // AddRemoveTag adds or removes a tag from the time entry corresponding to a
 // given ID.
-func (session *Session) AddRemoveTag(entryID int, tag string, add bool) (TimeEntry, error) {
+func (session *Session) AddRemoveTag(wid, entryID int, tag string, add bool) (TimeEntry, error) {
 	dlog.Printf("Adding tag to time entry %v", entryID)
 
 	action := "add"
@@ -425,7 +423,7 @@ func (session *Session) AddRemoveTag(entryID int, tag string, add bool) (TimeEnt
 			"tag_action": action,
 		},
 	}
-	path := fmt.Sprintf("/time_entries/%v", entryID)
+	path := fmt.Sprintf("/workspaces/%d/time_entries/%d", wid, entryID)
 	respData, err := session.post(TogglAPI, path, data)
 
 	return timeEntryRequest(respData, err)
@@ -434,7 +432,7 @@ func (session *Session) AddRemoveTag(entryID int, tag string, add bool) (TimeEnt
 // DeleteTimeEntry deletes a time entry.
 func (session *Session) DeleteTimeEntry(timer TimeEntry) ([]byte, error) {
 	dlog.Printf("Deleting timer %v", timer)
-	path := fmt.Sprintf("/time_entries/%v", timer.ID)
+	path := fmt.Sprintf("/workspaces/%d/time_entries/%d", timer.Wid, timer.ID)
 	return session.delete(TogglAPI, path)
 }
 
@@ -447,7 +445,7 @@ func (e *TimeEntry) IsRunning() bool {
 func (session *Session) GetProjects(wid int) (projects []Project, err error) {
 	dlog.Printf("Getting projects for workspace %d", wid)
 	path := fmt.Sprintf("/workspaces/%v/projects", wid)
-	data,err := session.get(TogglAPI, path, nil)
+	data, err := session.get(TogglAPI, path, nil)
 	if err != nil {
 		return
 	}
@@ -464,7 +462,7 @@ func (session *Session) GetProject(id int) (project *Project, err error) {
 	}
 	dlog.Printf("Getting project with id %d", id)
 	path := fmt.Sprintf("/projects/%v", id)
-	data,err := session.get(TogglAPI, path, nil)
+	data, err := session.get(TogglAPI, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -543,7 +541,7 @@ func (session *Session) CreateTag(name string, wid int) (proj Tag, err error) {
 		},
 	}
 
-	respData, err := session.post(TogglAPI, "/tags", data)
+	respData, err := session.post(TogglAPI, fmt.Sprintf("/workspaces/%d/tags", wid), data)
 	if err != nil {
 		return proj, err
 	}
@@ -566,7 +564,7 @@ func (session *Session) UpdateTag(tag Tag) (Tag, error) {
 	data := map[string]interface{}{
 		"tag": tag,
 	}
-	path := fmt.Sprintf("/tags/%v", tag.ID)
+	path := fmt.Sprintf("/workspaces/%d/tags/%v", tag.Wid, tag.ID)
 	respData, err := session.put(TogglAPI, path, data)
 
 	if err != nil {
@@ -588,7 +586,7 @@ func (session *Session) UpdateTag(tag Tag) (Tag, error) {
 // DeleteTag deletes a tag.
 func (session *Session) DeleteTag(tag Tag) ([]byte, error) {
 	dlog.Printf("Deleting tag %v", tag)
-	path := fmt.Sprintf("/tags/%v", tag.ID)
+	path := fmt.Sprintf("/workspaces/%d/tags/%v", tag.Wid, tag.ID)
 	return session.delete(TogglAPI, path)
 }
 
@@ -596,7 +594,7 @@ func (session *Session) DeleteTag(tag Tag) ([]byte, error) {
 func (session *Session) GetClients() (clients []Client, err error) {
 	dlog.Println("Retrieving clients")
 
-	data, err := session.get(TogglAPI, "/clients", nil)
+	data, err := session.get(TogglAPI, "/me/clients", nil)
 	if err != nil {
 		return clients, err
 	}
@@ -614,7 +612,7 @@ func (session *Session) CreateClient(name string, wid int) (client Client, err e
 		},
 	}
 
-	respData, err := session.post(TogglAPI, "/clients", data)
+	respData, err := session.post(TogglAPI, fmt.Sprintf("/workspaces/%d/clients", wid), data)
 	if err != nil {
 		return client, err
 	}
@@ -623,7 +621,7 @@ func (session *Session) CreateClient(name string, wid int) (client Client, err e
 		Data Client `json:"data"`
 	}
 	err = json.Unmarshal(respData, &entry)
-	dlog.Printf("Unmarshaled '%s' into %#v\n", respData, entry)
+	dlog.Printf("Unmarshalled '%s' into %#v\n", respData, entry)
 	if err != nil {
 		return client, err
 	}
